@@ -55,13 +55,13 @@ type Backend interface {
 
 // config file
 type configBackend struct {
-	BaseDN     string
-	Datastore  string
-	Insecure   bool     // For LDAP backend only
-	Servers    []string // For LDAP backend only
-	NameAttr   string
-	GroupAttr  string
-	SSHKeyAttr string
+	BaseDN      string
+	Datastore   string
+	Insecure    bool     // For LDAP backend only
+	Servers     []string // For LDAP backend only
+	NameFormat  string
+	GroupFormat string
+	SSHKeyAttr  string
 }
 type configFrontend struct {
 	AllowedBaseDNs []string // For LDAP backend only
