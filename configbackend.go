@@ -186,6 +186,14 @@ func (h configHandler) Search(bindDN string, searchReq ldap.SearchRequest, conn 
 				attrs = append(attrs, &ldap.EntryAttribute{"sn", []string{u.SN}})
 			}
 
+			if len(u.GivenName) > 0 && len(u.SN) > 0 {
+				attrs = append(attrs, &ldap.EntryAttribute{"displayName", []string{fmt.Sprintf("%s %s", u.GivenName, u.SN)}})
+			} else if len(u.GivenName) > 0 {
+				attrs = append(attrs, &ldap.EntryAttribute{"displayName", []string{fmt.Sprintf("%s", u.GivenName)}})
+			} else if len(u.SN) > 0 {
+				attrs = append(attrs, &ldap.EntryAttribute{"displayName", []string{fmt.Sprintf("%s", u.SN)}})
+			}
+
 			attrs = append(attrs, &ldap.EntryAttribute{"ou", []string{h.getGroupName(u.PrimaryGroup)}})
 			attrs = append(attrs, &ldap.EntryAttribute{"uidNumber", []string{fmt.Sprintf("%d", u.UnixID)}})
 
