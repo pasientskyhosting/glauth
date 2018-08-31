@@ -84,6 +84,22 @@ func (h configHandler) Bind(bindDN, bindSimplePw string, conn net.Conn) (resultC
 		return ldap.LDAPResultInvalidCredentials, nil
 	}
 
+	groups := h.getGroups(append(user.OtherGroups, user.PrimaryGroup))
+	groups2FA := []configGroup{}
+
+	for _, g := range groups {
+		if g.Require2FA == true {
+			groups2FA = append(groups2FA, g)
+		}
+	}
+
+	if len(groups2FA) > 0 && len(user.Yubikey) == 0 && len(user.OTPSecret) == 0 {
+		for _, g := range groups2FA {
+			log.Warning(fmt.Sprintf("Bind Error: User %s is member of group %s which requires 2FA but none configured for use", userName, g.Name))
+		}
+		return ldap.LDAPResultInvalidCredentials, nil
+	}
+
 	validotp := false
 
 	if len(user.Yubikey) == 0 && len(user.OTPSecret) == 0 {
@@ -142,7 +158,7 @@ func (h configHandler) Search(bindDN string, searchReq ldap.SearchRequest, conn 
 
 	// validate the user is authenticated and has appropriate access
 	if len(bindDN) < 1 {
-		return ldap.ServerSearchResult{ResultCode: ldap.LDAPResultInsufficientAccessRights}, fmt.Errorf("Search Error: Anonymous BindDN not allowed %s", bindDN)
+		return ldap.ServerSearchResult{ResultCode: ldap.LDAPResultInappropriateAuthentication}, fmt.Errorf("Search Error: Anonymous BindDN not allowed %s", bindDN)
 	}
 	if !strings.HasSuffix(bindDN, baseDN) {
 		return ldap.ServerSearchResult{ResultCode: ldap.LDAPResultInsufficientAccessRights}, fmt.Errorf("Search Error: BindDN %s not in our BaseDN %s", bindDN, h.cfg.Backend.BaseDN)
@@ -323,6 +339,29 @@ func (h configHandler) getGroupMemberIDs(gid int) []string {
 	sort.Strings(m)
 
 	return m
+}
+
+func (h configHandler) getGroups(gids []int) []configGroup {
+	groups := []configGroup{}
+	for _, gid := range gids {
+		for _, g := range h.cfg.Groups {
+			if g.UnixID == gid {
+				groups = append(groups, g)
+			}
+
+			for _, includegroupid := range g.IncludeGroups {
+				if includegroupid == gid && g.UnixID != gid {
+					includegroups := h.getGroups([]int{g.UnixID})
+
+					for _, includegroup := range includegroups {
+						groups = append(groups, includegroup)
+					}
+				}
+			}
+		}
+	}
+
+	return groups
 }
 
 // Converts an array of GUIDs into an array of DNs

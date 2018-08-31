@@ -118,6 +118,7 @@ type configGroup struct {
 	Name          string
 	UnixID        int
 	IncludeGroups []int
+	Require2FA    bool
 }
 type config struct {
 	API                configAPI
