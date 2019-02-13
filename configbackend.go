@@ -28,7 +28,6 @@ func newConfigHandler(cfg *config, yubikeyAuth *yubigo.YubiAuth) Backend {
 func (h configHandler) Bind(bindDN, bindSimplePw string, conn net.Conn) (resultCode ldap.LDAPResultCode, err error) {
 	bindDN = strings.ToLower(bindDN)
 	baseDN := strings.ToLower("," + h.cfg.Backend.BaseDN)
-	log.Debug(conn.RemoteAddr().String())
 	log.Debug(fmt.Sprintf("Bind request: bindDN: %s, BaseDN: %s, source: %s", bindDN, h.cfg.Backend.BaseDN, conn.RemoteAddr().String()))
 
 	stats_frontend.Add("bind_reqs", 1)
@@ -83,22 +82,6 @@ func (h configHandler) Bind(bindDN, bindSimplePw string, conn net.Conn) (resultC
 		log.Warning(fmt.Sprintf("Bind Error: User %s primary group is not %s.", userName, groupName))
 		return ldap.LDAPResultInvalidCredentials, nil
 	}
-
-	// groups := h.getGroups(append(user.OtherGroups, user.PrimaryGroup))
-	// groups2FA := []configGroup{}
-
-	// for _, g := range groups {
-	// 	if g.Require2FA == true {
-	// 		groups2FA = append(groups2FA, g)
-	// 	}
-	// }
-
-	// if len(groups2FA) > 0 && len(user.Yubikey) == 0 && len(user.OTPSecret) == 0 {
-	// 	for _, g := range groups2FA {
-	// 		log.Warning(fmt.Sprintf("Bind Error: User %s is member of group %s which requires 2FA but none configured for use", userName, g.Name))
-	// 	}
-	// 	return ldap.LDAPResultInvalidCredentials, nil
-	// }
 
 	validotp := false
 
@@ -158,6 +141,7 @@ func (h configHandler) Search(bindDN string, searchReq ldap.SearchRequest, conn 
 
 	// validate the user is authenticated and has appropriate access
 	if len(bindDN) < 1 {
+		// close the connection - not doing so can cause weird client-side behavior (sssd will not react properly if connection is not closed)
 		err := conn.Close()
 		if err != nil {
 			return ldap.ServerSearchResult{ResultCode: ldap.LDAPResultInappropriateAuthentication}, err
@@ -264,25 +248,29 @@ func (h configHandler) Close(boundDn string, conn net.Conn) error {
 	return nil
 }
 
+func (h configHandler) userSatisfiesGroupRequirements(user configUser, groupId int) bool {
+	return h.getGroupRequire2FA(groupId) == false || len(user.OTPSecret) > 0 || len(user.Yubikey) > 0
+}
+
 //
 func (h configHandler) getGroupMembers(gid int) []string {
 	members := make(map[string]bool)
 	for _, u := range h.cfg.Users {
 		if u.PrimaryGroup == gid {
-			if len(u.OTPSecret) == 0 && len(u.Yubikey) == 0 && h.getGroupRequire2FA(gid) == true {
-				log.Debug("User %s not added as member of %d because no 2FA", u.Name, gid)
-			} else {
+			if h.userSatisfiesGroupRequirements(u, gid) {
 				dn := fmt.Sprintf("%s=%s,%s=%s,%s", h.cfg.Backend.NameFormat, u.Name, h.cfg.Backend.GroupFormat, h.getGroupName(u.PrimaryGroup), h.cfg.Backend.BaseDN)
 				members[dn] = true
+			} else {
+				log.Debug("User %s not added as member of %d because no 2FA", u.Name, gid)
 			}
 		} else {
 			for _, othergid := range u.OtherGroups {
 				if othergid == gid {
-					if len(u.OTPSecret) == 0 && len(u.Yubikey) == 0 && h.getGroupRequire2FA(gid) == true {
-						log.Debug("User %s not added as member of %d because no 2FA", u.Name, gid)
-					} else {
+					if h.userSatisfiesGroupRequirements(u, gid) {
 						dn := fmt.Sprintf("%s=%s,%s=%s,%s", h.cfg.Backend.NameFormat, u.Name, h.cfg.Backend.GroupFormat, h.getGroupName(u.PrimaryGroup), h.cfg.Backend.BaseDN)
 						members[dn] = true
+					} else {
+						log.Debug("User %s not added as member of %d because no 2FA", u.Name, gid)
 					}
 				}
 			}
@@ -318,18 +306,18 @@ func (h configHandler) getGroupMemberIDs(gid int) []string {
 	members := make(map[string]bool)
 	for _, u := range h.cfg.Users {
 		if u.PrimaryGroup == gid {
-			if len(u.OTPSecret) == 0 && len(u.Yubikey) == 0 && h.getGroupRequire2FA(gid) == true {
-				log.Debug("User %s not added as member of %d because no 2FA", u.Name, gid)
-			} else {
+			if h.userSatisfiesGroupRequirements(u, gid) {
 				members[u.Name] = true
+			} else {
+				log.Debug("User %s not added as member of %d because no 2FA", u.Name, gid)
 			}
 		} else {
 			for _, othergid := range u.OtherGroups {
 				if othergid == gid {
-					if len(u.OTPSecret) == 0 && len(u.Yubikey) == 0 && h.getGroupRequire2FA(gid) == true {
-						log.Debug("User %s not added as member of %d because no 2FA", u.Name, gid)
-					} else {
+					if h.userSatisfiesGroupRequirements(u, gid) {
 						members[u.Name] = true
+					} else {
+						log.Debug("User %s not added as member of %d because no 2FA", u.Name, gid)
 					}
 				}
 			}
