@@ -28,7 +28,7 @@ func newConfigHandler(cfg *config, yubikeyAuth *yubigo.YubiAuth) Backend {
 func (h configHandler) Bind(bindDN, bindSimplePw string, conn net.Conn) (resultCode ldap.LDAPResultCode, err error) {
 	bindDN = strings.ToLower(bindDN)
 	baseDN := strings.ToLower("," + h.cfg.Backend.BaseDN)
-
+	log.Debug(conn.RemoteAddr().String())
 	log.Debug(fmt.Sprintf("Bind request: bindDN: %s, BaseDN: %s, source: %s", bindDN, h.cfg.Backend.BaseDN, conn.RemoteAddr().String()))
 
 	stats_frontend.Add("bind_reqs", 1)
@@ -84,21 +84,21 @@ func (h configHandler) Bind(bindDN, bindSimplePw string, conn net.Conn) (resultC
 		return ldap.LDAPResultInvalidCredentials, nil
 	}
 
-	groups := h.getGroups(append(user.OtherGroups, user.PrimaryGroup))
-	groups2FA := []configGroup{}
+	// groups := h.getGroups(append(user.OtherGroups, user.PrimaryGroup))
+	// groups2FA := []configGroup{}
 
-	for _, g := range groups {
-		if g.Require2FA == true {
-			groups2FA = append(groups2FA, g)
-		}
-	}
+	// for _, g := range groups {
+	// 	if g.Require2FA == true {
+	// 		groups2FA = append(groups2FA, g)
+	// 	}
+	// }
 
-	if len(groups2FA) > 0 && len(user.Yubikey) == 0 && len(user.OTPSecret) == 0 {
-		for _, g := range groups2FA {
-			log.Warning(fmt.Sprintf("Bind Error: User %s is member of group %s which requires 2FA but none configured for use", userName, g.Name))
-		}
-		return ldap.LDAPResultInvalidCredentials, nil
-	}
+	// if len(groups2FA) > 0 && len(user.Yubikey) == 0 && len(user.OTPSecret) == 0 {
+	// 	for _, g := range groups2FA {
+	// 		log.Warning(fmt.Sprintf("Bind Error: User %s is member of group %s which requires 2FA but none configured for use", userName, g.Name))
+	// 	}
+	// 	return ldap.LDAPResultInvalidCredentials, nil
+	// }
 
 	validotp := false
 
@@ -152,20 +152,25 @@ func (h configHandler) Bind(bindDN, bindSimplePw string, conn net.Conn) (resultC
 func (h configHandler) Search(bindDN string, searchReq ldap.SearchRequest, conn net.Conn) (result ldap.ServerSearchResult, err error) {
 	bindDN = strings.ToLower(bindDN)
 	baseDN := strings.ToLower("," + h.cfg.Backend.BaseDN)
-	searchBaseDN := strings.ToLower(searchReq.BaseDN)
+	// searchBaseDN := strings.ToLower(searchReq.BaseDN)
 	log.Debug("Search request as %s from %s for %s", bindDN, conn.RemoteAddr().String(), searchReq.Filter)
 	stats_frontend.Add("search_reqs", 1)
 
 	// validate the user is authenticated and has appropriate access
 	if len(bindDN) < 1 {
+		err := conn.Close()
+		if err != nil {
+			return ldap.ServerSearchResult{ResultCode: ldap.LDAPResultInappropriateAuthentication}, err
+		}
+
 		return ldap.ServerSearchResult{ResultCode: ldap.LDAPResultInappropriateAuthentication}, fmt.Errorf("Search Error: Anonymous BindDN not allowed %s", bindDN)
 	}
 	if !strings.HasSuffix(bindDN, baseDN) {
 		return ldap.ServerSearchResult{ResultCode: ldap.LDAPResultInsufficientAccessRights}, fmt.Errorf("Search Error: BindDN %s not in our BaseDN %s", bindDN, h.cfg.Backend.BaseDN)
 	}
-	if !strings.HasSuffix(searchBaseDN, h.cfg.Backend.BaseDN) {
-		return ldap.ServerSearchResult{ResultCode: ldap.LDAPResultInsufficientAccessRights}, fmt.Errorf("Search Error: search BaseDN %s is not in our BaseDN %s", searchBaseDN, h.cfg.Backend.BaseDN)
-	}
+	// if !strings.HasSuffix(searchBaseDN, h.cfg.Backend.BaseDN) {
+	// 	return ldap.ServerSearchResult{ResultCode: ldap.LDAPResultNoSuchObject}, fmt.Errorf("Search Error: search BaseDN %s is not in our BaseDN %s", searchBaseDN, h.cfg.Backend.BaseDN)
+	// }
 	// return all users in the config file - the LDAP library will filter results for us
 	entries := []*ldap.Entry{}
 	filterEntity, err := ldap.GetFilterObjectClass(searchReq.Filter)
@@ -240,7 +245,7 @@ func (h configHandler) Search(bindDN string, searchReq ldap.SearchRequest, conn 
 			attrs = append(attrs, &ldap.EntryAttribute{"description", []string{fmt.Sprintf("%s", u.Name)}})
 			attrs = append(attrs, &ldap.EntryAttribute{"gecos", []string{fmt.Sprintf("%s", u.Name)}})
 			attrs = append(attrs, &ldap.EntryAttribute{"gidNumber", []string{fmt.Sprintf("%d", u.PrimaryGroup)}})
-			attrs = append(attrs, &ldap.EntryAttribute{"memberOf", h.getGroupDNs(append(u.OtherGroups, u.PrimaryGroup))})
+			attrs = append(attrs, &ldap.EntryAttribute{"memberOf", h.getGroupDNs(u.UnixID, append(u.OtherGroups, u.PrimaryGroup))})
 			if len(u.SSHKeys) > 0 {
 				attrs = append(attrs, &ldap.EntryAttribute{h.cfg.Backend.SSHKeyAttr, u.SSHKeys})
 			}
@@ -264,13 +269,21 @@ func (h configHandler) getGroupMembers(gid int) []string {
 	members := make(map[string]bool)
 	for _, u := range h.cfg.Users {
 		if u.PrimaryGroup == gid {
-			dn := fmt.Sprintf("%s=%s,%s=%s,%s", h.cfg.Backend.NameFormat, u.Name, h.cfg.Backend.GroupFormat, h.getGroupName(u.PrimaryGroup), h.cfg.Backend.BaseDN)
-			members[dn] = true
+			if len(u.OTPSecret) == 0 && len(u.Yubikey) == 0 && h.getGroupRequire2FA(gid) == true {
+				log.Debug("User %s not added as member of %d because no 2FA", u.Name, gid)
+			} else {
+				dn := fmt.Sprintf("%s=%s,%s=%s,%s", h.cfg.Backend.NameFormat, u.Name, h.cfg.Backend.GroupFormat, h.getGroupName(u.PrimaryGroup), h.cfg.Backend.BaseDN)
+				members[dn] = true
+			}
 		} else {
 			for _, othergid := range u.OtherGroups {
 				if othergid == gid {
-					dn := fmt.Sprintf("%s=%s,%s=%s,%s", h.cfg.Backend.NameFormat, u.Name, h.cfg.Backend.GroupFormat, h.getGroupName(u.PrimaryGroup), h.cfg.Backend.BaseDN)
-					members[dn] = true
+					if len(u.OTPSecret) == 0 && len(u.Yubikey) == 0 && h.getGroupRequire2FA(gid) == true {
+						log.Debug("User %s not added as member of %d because no 2FA", u.Name, gid)
+					} else {
+						dn := fmt.Sprintf("%s=%s,%s=%s,%s", h.cfg.Backend.NameFormat, u.Name, h.cfg.Backend.GroupFormat, h.getGroupName(u.PrimaryGroup), h.cfg.Backend.BaseDN)
+						members[dn] = true
+					}
 				}
 			}
 		}
@@ -291,7 +304,7 @@ func (h configHandler) getGroupMembers(gid int) []string {
 	}
 
 	m := []string{}
-	for k, _ := range members {
+	for k := range members {
 		m = append(m, k)
 	}
 
@@ -305,11 +318,19 @@ func (h configHandler) getGroupMemberIDs(gid int) []string {
 	members := make(map[string]bool)
 	for _, u := range h.cfg.Users {
 		if u.PrimaryGroup == gid {
-			members[u.Name] = true
+			if len(u.OTPSecret) == 0 && len(u.Yubikey) == 0 && h.getGroupRequire2FA(gid) == true {
+				log.Debug("User %s not added as member of %d because no 2FA", u.Name, gid)
+			} else {
+				members[u.Name] = true
+			}
 		} else {
 			for _, othergid := range u.OtherGroups {
 				if othergid == gid {
-					members[u.Name] = true
+					if len(u.OTPSecret) == 0 && len(u.Yubikey) == 0 && h.getGroupRequire2FA(gid) == true {
+						log.Debug("User %s not added as member of %d because no 2FA", u.Name, gid)
+					} else {
+						members[u.Name] = true
+					}
 				}
 			}
 		}
@@ -365,18 +386,22 @@ func (h configHandler) getGroups(gids []int) []configGroup {
 }
 
 // Converts an array of GUIDs into an array of DNs
-func (h configHandler) getGroupDNs(gids []int) []string {
+func (h configHandler) getGroupDNs(uid int, gids []int) []string {
 	groups := make(map[string]bool)
 	for _, gid := range gids {
 		for _, g := range h.cfg.Groups {
 			if g.UnixID == gid {
-				dn := fmt.Sprintf("cn=%s,%s=groups,%s", g.Name, h.cfg.Backend.GroupFormat, h.cfg.Backend.BaseDN)
-				groups[dn] = true
+				if len(h.getUserYubikey(uid)) == 0 && len(h.getUserOTPSecret(uid)) == 0 && h.getGroupRequire2FA(gid) {
+					log.Debug("User %s not added as member of %d because no 2FA", uid, gid)
+				} else {
+					dn := fmt.Sprintf("cn=%s,%s=groups,%s", g.Name, h.cfg.Backend.GroupFormat, h.cfg.Backend.BaseDN)
+					groups[dn] = true
+				}
 			}
 
 			for _, includegroupid := range g.IncludeGroups {
 				if includegroupid == gid && g.UnixID != gid {
-					includegroupdns := h.getGroupDNs([]int{g.UnixID})
+					includegroupdns := h.getGroupDNs(uid, []int{g.UnixID})
 
 					for _, includegroupdn := range includegroupdns {
 						groups[includegroupdn] = true
@@ -396,6 +421,26 @@ func (h configHandler) getGroupDNs(gids []int) []string {
 	return g
 }
 
+func (h configHandler) getUserYubikey(uid int) string {
+	for _, u := range h.cfg.Users {
+		if u.UnixID == uid {
+			return u.Yubikey
+		}
+	}
+
+	return ""
+}
+
+func (h configHandler) getUserOTPSecret(uid int) string {
+	for _, u := range h.cfg.Users {
+		if u.UnixID == uid {
+			return u.OTPSecret
+		}
+	}
+
+	return ""
+}
+
 //
 func (h configHandler) getGroupName(gid int) string {
 	for _, g := range h.cfg.Groups {
@@ -404,4 +449,14 @@ func (h configHandler) getGroupName(gid int) string {
 		}
 	}
 	return ""
+}
+
+func (h configHandler) getGroupRequire2FA(gid int) bool {
+	for _, g := range h.cfg.Groups {
+		if g.UnixID == gid {
+			return g.Require2FA
+		}
+	}
+
+	return false
 }
