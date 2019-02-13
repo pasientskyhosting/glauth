@@ -37,7 +37,7 @@ fast: setup linux64 verify cleanup
 binaries: linux32 linux64 linuxarm32 linuxarm64 darwin64 win32 win64
 
 # Setup commands to always run
-setup: bindata format
+setup: getdeps bindata format
 
 #####################
 # Subcommands
@@ -47,7 +47,12 @@ setup: bindata format
 runtest:
 	./scripts/travis/integration-test.sh cleanup
 
+# Get all dependencies
+getdeps:
+	go get -d ./...
 
+updatetest:
+	./scripts/travis/integration-test.sh
 
 bindata:
 	go get -u github.com/jteeuwen/go-bindata/... && ${GOPATH}/bin/go-bindata -pkg=main assets && gofmt -w bindata.go
