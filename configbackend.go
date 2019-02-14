@@ -21,6 +21,8 @@ const (
 	BindInvalid = "invalid"
 	// BindNotFound - User or group not found for bind attempt - used for logging
 	BindNotFound = "notfound"
+	// BindInvalidCredentials - User did not specify valid credentials
+	BindInvalidCredentials = "invalidcredentials"
 )
 
 type configHandler struct {
@@ -179,14 +181,14 @@ func (h configHandler) Bind(bindDN, bindSimplePw string, conn net.Conn) (resultC
 
 	// Then ensure the OTP is valid before checking
 	if !validotp {
-		h.LogBindAttempt(user.Name, BindInvalid)
+		h.LogBindAttempt(user.Name, BindInvalidCredentials)
 		log.Warning(fmt.Sprintf("Bind Error: invalid OTP token as %s from %s", bindDN, conn.RemoteAddr().String()))
 		return ldap.LDAPResultInvalidCredentials, nil
 	}
 
 	// Now, check the hash
 	if user.PassSHA256 != hex.EncodeToString(hash.Sum(nil)) {
-		h.LogBindAttempt(user.Name, BindInvalid)
+		h.LogBindAttempt(user.Name, BindInvalidCredentials)
 		log.Warning(fmt.Sprintf("Bind Error: invalid credentials as %s from %s", bindDN, conn.RemoteAddr().String()))
 		return ldap.LDAPResultInvalidCredentials, nil
 	}
