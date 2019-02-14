@@ -8,8 +8,19 @@ import (
 	"github.com/nmcclain/ldap"
 	"github.com/pquerna/otp/totp"
 	"net"
+	"os"
 	"sort"
 	"strings"
+	"time"
+)
+
+const (
+	// BindSuccess - Successful bind attempt - used for logging
+	BindSuccess = "success"
+	// BindInvalid - Invalid bind attempt - used for logging
+	BindInvalid = "invalid"
+	// BindNotFound - User or group not found for bind attempt - used for logging
+	BindNotFound = "notfound"
 )
 
 type configHandler struct {
@@ -24,6 +35,26 @@ func newConfigHandler(cfg *config, yubikeyAuth *yubigo.YubiAuth) Backend {
 	return handler
 }
 
+func (h configHandler) LogBindAttempt(userName string, result string) {
+	if len(h.cfg.AuthLog) == 0 {
+		return
+	}
+
+	f, err := os.OpenFile(h.cfg.AuthLog, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0666)
+	if err != nil {
+		log.Warning(fmt.Sprintf("Could not open auth-log file %s for writing", h.cfg.AuthLog))
+		return
+	}
+	defer f.Close()
+
+	_, err = f.WriteString(fmt.Sprintf("%s|%s|%s\n", time.Now().Format(time.RFC3339), userName, result))
+	if err != nil {
+		log.Warning(fmt.Sprintf("Could not write auth-log entry to %s", h.cfg.AuthLog))
+	}
+
+	return
+}
+
 //
 func (h configHandler) Bind(bindDN, bindSimplePw string, conn net.Conn) (resultCode ldap.LDAPResultCode, err error) {
 	bindDN = strings.ToLower(bindDN)
@@ -34,6 +65,7 @@ func (h configHandler) Bind(bindDN, bindSimplePw string, conn net.Conn) (resultC
 
 	// parse the bindDN - ensure that the bindDN ends with the BaseDN
 	if !strings.HasSuffix(bindDN, baseDN) {
+		h.LogBindAttempt(bindDN, BindInvalid)
 		log.Warning(fmt.Sprintf("Bind Error: BindDN %s not our BaseDN %s", bindDN, h.cfg.Backend.BaseDN))
 		// log.Warning(fmt.Sprintf("Bind Error: BindDN %s not our BaseDN %s", bindDN, baseDN))
 		return ldap.LDAPResultInvalidCredentials, nil
@@ -47,6 +79,7 @@ func (h configHandler) Bind(bindDN, bindSimplePw string, conn net.Conn) (resultC
 		userName = strings.TrimPrefix(parts[0], h.cfg.Backend.NameFormat+"=")
 		groupName = strings.TrimPrefix(parts[1], h.cfg.Backend.GroupFormat+"=")
 	} else {
+		h.LogBindAttempt(userName, BindInvalid)
 		log.Warning(fmt.Sprintf("Bind Error: BindDN %s should have only one or two parts (has %d)", bindDN, len(parts)))
 		return ldap.LDAPResultInvalidCredentials, nil
 	}
@@ -61,6 +94,7 @@ func (h configHandler) Bind(bindDN, bindSimplePw string, conn net.Conn) (resultC
 		}
 	}
 	if !found {
+		h.LogBindAttempt(userName, BindNotFound)
 		log.Warning(fmt.Sprintf("Bind Error: User %s not found.", userName))
 		return ldap.LDAPResultInvalidCredentials, nil
 	}
@@ -74,11 +108,13 @@ func (h configHandler) Bind(bindDN, bindSimplePw string, conn net.Conn) (resultC
 		}
 	}
 	if !found {
+		h.LogBindAttempt(user.Name, BindNotFound)
 		log.Warning(fmt.Sprintf("Bind Error: Group %s not found.", groupName))
 		return ldap.LDAPResultInvalidCredentials, nil
 	}
 	// validate group membership
 	if user.PrimaryGroup != group.UnixID {
+		h.LogBindAttempt(user.Name, BindInvalid)
 		log.Warning(fmt.Sprintf("Bind Error: User %s primary group is not %s.", userName, groupName))
 		return ldap.LDAPResultInvalidCredentials, nil
 	}
@@ -129,7 +165,8 @@ func (h configHandler) Bind(bindDN, bindSimplePw string, conn net.Conn) (resultC
 		if appPw != hex.EncodeToString(hashFull.Sum(nil)) {
 			log.Debug(fmt.Sprintf("Attempted to bind app pw #%d - failure as %s from %s", index, bindDN, conn.RemoteAddr().String()))
 		} else {
-			stats_frontend.Add("bind_successes", 1)
+			stats_frontend.Add("BindSuccesses", 1)
+			h.LogBindAttempt(user.Name, BindSuccess)
 			log.Debug("Bind success using app pw #%d as %s from %s", index, bindDN, conn.RemoteAddr().String())
 			return ldap.LDAPResultSuccess, nil
 		}
@@ -142,18 +179,21 @@ func (h configHandler) Bind(bindDN, bindSimplePw string, conn net.Conn) (resultC
 
 	// Then ensure the OTP is valid before checking
 	if !validotp {
+		h.LogBindAttempt(user.Name, BindInvalid)
 		log.Warning(fmt.Sprintf("Bind Error: invalid OTP token as %s from %s", bindDN, conn.RemoteAddr().String()))
 		return ldap.LDAPResultInvalidCredentials, nil
 	}
 
 	// Now, check the hash
 	if user.PassSHA256 != hex.EncodeToString(hash.Sum(nil)) {
+		h.LogBindAttempt(user.Name, BindInvalid)
 		log.Warning(fmt.Sprintf("Bind Error: invalid credentials as %s from %s", bindDN, conn.RemoteAddr().String()))
 		return ldap.LDAPResultInvalidCredentials, nil
 	}
 
-	stats_frontend.Add("bind_successes", 1)
+	stats_frontend.Add("BindSuccesses", 1)
 	log.Debug(fmt.Sprintf("Bind success as %s from %s", bindDN, conn.RemoteAddr().String()))
+	h.LogBindAttempt(user.Name, BindSuccess)
 	return ldap.LDAPResultSuccess, nil
 }
 

@@ -133,6 +133,7 @@ type config struct {
 	LDAPS              configLDAPS
 	Groups             []configGroup
 	Syslog             bool
+	AuthLog            string
 	Users              []configUser
 	ConfigFile         string
 	AwsAccessKeyId     string
