@@ -480,14 +480,14 @@ func (h configHandler) getGroupDNs(uid int, gids []int) []string {
 	return g
 }
 
-func (h configHandler) getUserYubikey(uid int) string {
+func (h configHandler) getUserYubikey(uid int) []string {
 	for _, u := range h.cfg.Users {
 		if u.UnixID == uid {
 			return u.Yubikey
 		}
 	}
 
-	return ""
+	return []string{}
 }
 
 func (h configHandler) getUserOTPSecret(uid int) string {
