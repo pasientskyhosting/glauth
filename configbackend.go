@@ -133,11 +133,14 @@ func (h configHandler) Bind(bindDN, bindSimplePw string, conn net.Conn) (resultC
 			yubikeyid := otp[0:12]
 			bindSimplePw = bindSimplePw[:len(bindSimplePw)-44]
 
-			if user.Yubikey == yubikeyid {
-				_, ok, _ := h.yubikeyAuth.Verify(otp)
+			for _, yubikey := range user.Yubikey {
+				if yubikey == yubikeyid {
+					_, ok, _ := h.yubikeyAuth.Verify(otp)
 
-				if ok {
-					validotp = true
+					if ok {
+						validotp = true
+						break
+					}
 				}
 			}
 		}

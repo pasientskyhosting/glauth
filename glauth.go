@@ -106,7 +106,7 @@ type configUser struct {
 	PrimaryGroup  int
 	SSHKeys       []string
 	OTPSecret     string
-	Yubikey       string
+	Yubikey       []string
 	Disabled      bool
 	UnixID        int
 	Mail          string
